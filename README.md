@@ -7,7 +7,7 @@ App Android simples e rápido para controlar se o medicamento foi tomado.
 - **Lista do dia**: todos os medicamentos ordenados por horário, com progresso ("2 de 4 tomados hoje").
 - **Um toque para marcar**: botão **Tomei** registra o horário em que foi tomado; toque em **Tomado** para desfazer.
 - **Atrasados em destaque**: horário fica vermelho quando passou e ainda não foi tomado.
-- **Lembretes**: notificação no horário de cada medicamento, com o botão **✓ Tomei** direto na notificação.
+- **Lembretes**: notificação no horário exato de cada medicamento, com o botão **✓ Tomei** direto na notificação. O ícone de sino no topo envia uma notificação de teste; se as notificações estiverem desativadas, aparece um aviso com o botão **Ativar**.
 - **Reinício automático diário**: cada dia começa com tudo pendente; o registro dos últimos 90 dias fica salvo no aparelho.
 - Funciona offline, sem conta e sem anúncios. Dados ficam só no celular.
 

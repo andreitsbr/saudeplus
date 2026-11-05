@@ -24,6 +24,7 @@ object Reminders {
     const val ACTION_REMIND = "com.saudeplus.app.REMIND"
     const val ACTION_TAKEN = "com.saudeplus.app.TAKEN"
     const val EXTRA_MED_ID = "med_id"
+    private const val TEST_ID = 999_999
 
     fun createChannel(context: Context) {
         val channel = NotificationChannel(
@@ -44,15 +45,61 @@ object Reminders {
         )
     }
 
-    /** Agenda o próximo lembrete (hoje, se ainda não passou do horário; senão amanhã). */
+    /** true se o app pode agendar alarmes no horário exato. */
+    fun canScheduleExact(context: Context): Boolean =
+        Build.VERSION.SDK_INT < 31 ||
+            context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+
+    /** true se as notificações do app estão liberadas (permissão + configurações do sistema). */
+    fun notificationsEnabled(context: Context): Boolean {
+        val permissionOk = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        return permissionOk && NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+
+    /**
+     * Agenda o próximo lembrete no horário exato: hoje, se o horário ainda não passou
+     * (ou é o minuto atual); senão amanhã.
+     */
     fun schedule(context: Context, med: Medication) {
         val now = LocalDateTime.now()
-        var next = LocalDateTime.of(LocalDate.now(), LocalTime.of(med.hour, med.minute))
-        if (!next.isAfter(now)) next = next.plusDays(1)
+        val today = LocalDateTime.of(LocalDate.now(), LocalTime.of(med.hour, med.minute))
+        val next = when {
+            today.isAfter(now) -> today
+            // Horário no minuto atual: avisa já (ex.: cadastrou para "agora").
+            !today.plusMinutes(1).isBefore(now) -> now.plusSeconds(2)
+            else -> today.plusDays(1)
+        }
         val millis = next.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val am = context.getSystemService(AlarmManager::class.java)
-        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, remindIntent(context, med.id))
+        val pi = remindIntent(context, med.id)
+        try {
+            if (canScheduleExact(context)) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+            }
+        } catch (e: SecurityException) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+        }
     }
+
+    /** Agenda o lembrete seguinte, sempre para o próximo dia (usado após disparar). */
+    private fun scheduleTomorrow(context: Context, med: Medication) {
+        val next = LocalDateTime.of(LocalDate.now().plusDays(1), LocalTime.of(med.hour, med.minute))
+        val millis = next.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val am = context.getSystemService(AlarmManager::class.java)
+        val pi = remindIntent(context, med.id)
+        try {
+            if (canScheduleExact(context)) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+            else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+        } catch (e: SecurityException) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+        }
+    }
+
+    internal fun onAlarmFired(context: Context, med: Medication) = scheduleTomorrow(context, med)
 
     fun cancel(context: Context, medId: Int) {
         context.getSystemService(AlarmManager::class.java).cancel(remindIntent(context, medId))
@@ -63,11 +110,12 @@ object Reminders {
         MedStore.meds.value.forEach { schedule(context, it) }
     }
 
-    fun showNotification(context: Context, med: Medication) {
+    fun showNotification(context: Context, med: Medication, test: Boolean = false) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) return
+        createChannel(context)
 
         val openApp = PendingIntent.getActivity(
             context, med.id,
@@ -86,17 +134,17 @@ object Reminders {
             if (med.dose.isNotBlank()) append(" ${med.dose}")
             append(" (${med.timeText})")
         }
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_pill)
-            .setContentTitle(med.name)
+            .setContentTitle(if (test) "Teste: ${med.name}" else med.name)
             .setContentText(text)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setContentIntent(openApp)
             .setAutoCancel(true)
-            .addAction(0, "✓ Tomei", takenAction)
-            .build()
-        NotificationManagerCompat.from(context).notify(med.id, notification)
+        // No teste o botão "Tomei" não aparece, para não marcar o remédio sem querer.
+        if (!test) builder.addAction(0, "✓ Tomei", takenAction)
+        NotificationManagerCompat.from(context).notify(if (test) TEST_ID else med.id, builder.build())
     }
 }
 
@@ -111,7 +159,7 @@ class ReminderReceiver : BroadcastReceiver() {
                     Reminders.createChannel(context)
                     Reminders.showNotification(context, med)
                 }
-                Reminders.schedule(context, med) // próximo dia
+                Reminders.onAlarmFired(context, med) // próximo dia
             }
             Reminders.ACTION_TAKEN -> {
                 MedStore.setTaken(med.id, true)
@@ -121,6 +169,7 @@ class ReminderReceiver : BroadcastReceiver() {
     }
 }
 
+/** Reagenda tudo após reiniciar, atualizar o app, mudar a hora ou liberar alarmes exatos. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         MedStore.init(context)

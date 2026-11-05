@@ -5,7 +5,13 @@ import android.app.TimePickerDialog
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +33,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -62,6 +70,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.delay
@@ -134,6 +143,34 @@ fun HomeScreen() {
     val sorted = meds.sortedWith(compareBy({ it.hour }, { it.minute }, { it.name }))
     val doneCount = sorted.count { taken.containsKey(MedStore.key(it.id, today)) }
 
+    var notifOk by remember { mutableStateOf(Reminders.notificationsEnabled(context)) }
+    var exactOk by remember { mutableStateOf(Reminders.canScheduleExact(context)) }
+    LifecycleResumeEffect(Unit) {
+        notifOk = Reminders.notificationsEnabled(context)
+        exactOk = Reminders.canScheduleExact(context)
+        if (exactOk) Reminders.scheduleAll(context)
+        onPauseOrDispose { }
+    }
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notifOk = Reminders.notificationsEnabled(context)
+        val activity = context as? ComponentActivity
+        // Negado de vez (o sistema não mostra mais o pedido): abre as configurações.
+        if (!granted && activity != null && Build.VERSION.SDK_INT >= 33 &&
+            !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.POST_NOTIFICATIONS)
+        ) {
+            openNotificationSettings(context)
+        }
+    }
+    val enableNotifications = {
+        val permissionMissing = Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        if (permissionMissing) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        else openNotificationSettings(context)
+    }
+
     var showAdd by remember { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<Medication?>(null) }
 
@@ -149,9 +186,24 @@ fun HomeScreen() {
                         Text(dateText, fontSize = 14.sp)
                     }
                 },
+                actions = {
+                    IconButton(onClick = {
+                        if (!Reminders.notificationsEnabled(context)) {
+                            enableNotifications()
+                        } else {
+                            val sample = sorted.firstOrNull()
+                                ?: Medication(0, "Seu medicamento", "", now.hour, now.minute)
+                            Reminders.showNotification(context, sample, test = true)
+                            Toast.makeText(context, "Notificação de teste enviada", Toast.LENGTH_SHORT).show()
+                        }
+                    }) {
+                        Icon(Icons.Filled.Notifications, contentDescription = "Testar notificação")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Teal,
                     titleContentColor = Color.White,
+                    actionIconContentColor = Color.White,
                 ),
             )
         },
@@ -170,6 +222,23 @@ fun HomeScreen() {
                 .padding(padding)
                 .fillMaxSize()
         ) {
+            if (!notifOk) {
+                WarningBanner(
+                    text = "As notificações estão desativadas. Sem elas você não recebe o aviso na hora de tomar.",
+                    button = "Ativar",
+                    onClick = enableNotifications,
+                )
+            } else if (!exactOk && Build.VERSION.SDK_INT >= 31) {
+                WarningBanner(
+                    text = "Permita \"Alarmes e lembretes\" para o aviso chegar no horário certo.",
+                    button = "Permitir",
+                    onClick = {
+                        context.startActivity(
+                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}"))
+                        )
+                    },
+                )
+            }
             if (sorted.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
@@ -246,6 +315,39 @@ fun HomeScreen() {
                 }) { Text("Excluir", color = LateRed) }
             },
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancelar") } },
+        )
+    }
+}
+
+@Composable
+fun WarningBanner(text: String, button: String, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = Color(0xFFE65100))
+            Spacer(Modifier.width(10.dp))
+            Text(text, Modifier.weight(1f), fontSize = 14.sp)
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = onClick,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100)),
+            ) { Text(button) }
+        }
+    }
+}
+
+private fun openNotificationSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        context.startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
 }
