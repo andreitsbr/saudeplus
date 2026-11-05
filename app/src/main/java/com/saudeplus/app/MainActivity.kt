@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -60,6 +61,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +76,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -171,6 +174,14 @@ fun HomeScreen() {
         else openNotificationSettings(context)
     }
 
+    // Verificação automática (silenciosa) de nova versão ao abrir o app.
+    var newRelease by remember { mutableStateOf<Updater.Release?>(null) }
+    var showUpdate by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val latest = runCatching { Updater.fetchLatest() }.getOrNull()
+        if (latest != null && latest.versionCode > Updater.currentVersionCode(context)) newRelease = latest
+    }
+
     var showAdd by remember { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<Medication?>(null) }
 
@@ -187,6 +198,9 @@ fun HomeScreen() {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showUpdate = true }) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Verificar atualização")
+                    }
                     IconButton(onClick = {
                         if (!Reminders.notificationsEnabled(context)) {
                             enableNotifications()
@@ -237,6 +251,15 @@ fun HomeScreen() {
                             Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}"))
                         )
                     },
+                )
+            }
+            newRelease?.let { rel ->
+                WarningBanner(
+                    text = "Nova versão ${rel.versionName} disponível.",
+                    button = "Atualizar",
+                    onClick = { showUpdate = true },
+                    color = Teal,
+                    background = Color(0xFFE0F2F1),
                 )
             }
             if (sorted.isEmpty()) {
@@ -291,6 +314,10 @@ fun HomeScreen() {
         }
     }
 
+    if (showUpdate) {
+        UpdateDialog(onDismiss = { showUpdate = false })
+    }
+
     if (showAdd) {
         AddMedDialog(
             onDismiss = { showAdd = false },
@@ -320,19 +347,25 @@ fun HomeScreen() {
 }
 
 @Composable
-fun WarningBanner(text: String, button: String, onClick: () -> Unit) {
+fun WarningBanner(
+    text: String,
+    button: String,
+    onClick: () -> Unit,
+    color: Color = Color(0xFFE65100),
+    background: Color = Color(0xFFFFF3E0),
+) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+        colors = CardDefaults.cardColors(containerColor = background),
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Warning, contentDescription = null, tint = Color(0xFFE65100))
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = color)
             Spacer(Modifier.width(10.dp))
             Text(text, Modifier.weight(1f), fontSize = 14.sp)
             Spacer(Modifier.width(8.dp))
             Button(
                 onClick = onClick,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100)),
+                colors = ButtonDefaults.buttonColors(containerColor = color),
             ) { Text(button) }
         }
     }
@@ -463,3 +496,103 @@ fun AddMedDialog(onDismiss: () -> Unit, onSave: (String, String, Int, Int) -> Un
 private fun formatTime(epochMillis: Long): String =
     Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).toLocalTime()
         .format(DateTimeFormatter.ofPattern("HH:mm"))
+
+private sealed interface UpdateState {
+    data object Checking : UpdateState
+    data object UpToDate : UpdateState
+    data class Available(val release: Updater.Release) : UpdateState
+    data class Downloading(val progress: Float) : UpdateState
+    data object Installing : UpdateState
+    data class Failed(val message: String) : UpdateState
+}
+
+@Composable
+fun UpdateDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<UpdateState>(UpdateState.Checking) }
+    var checkKey by remember { mutableStateOf(0) }
+
+    LaunchedEffect(checkKey) {
+        state = UpdateState.Checking
+        state = try {
+            val latest = Updater.fetchLatest()
+            if (latest != null && latest.versionCode > Updater.currentVersionCode(context)) {
+                UpdateState.Available(latest)
+            } else {
+                UpdateState.UpToDate
+            }
+        } catch (e: Exception) {
+            UpdateState.Failed("Não foi possível verificar. Confira a internet e tente de novo.")
+        }
+    }
+
+    fun downloadAndInstall(release: Updater.Release) {
+        if (!Updater.canInstall(context)) {
+            Toast.makeText(
+                context,
+                "Permita \"Instalar apps\" para o Saúde+ e toque em Atualizar de novo",
+                Toast.LENGTH_LONG,
+            ).show()
+            Updater.openInstallPermissionSettings(context)
+            return
+        }
+        scope.launch {
+            state = UpdateState.Downloading(0f)
+            try {
+                val apk = Updater.download(context, release.apkUrl) { p -> state = UpdateState.Downloading(p) }
+                state = UpdateState.Installing
+                Updater.install(context, apk)
+            } catch (e: Exception) {
+                state = UpdateState.Failed("Falha ao baixar a atualização. Tente de novo.")
+            }
+        }
+    }
+
+    val busy = state is UpdateState.Downloading
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Atualização") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Versão instalada: ${Updater.currentVersionName(context)}", color = Color.Gray, fontSize = 14.sp)
+                when (val st = state) {
+                    UpdateState.Checking -> {
+                        Text("Verificando…")
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    UpdateState.UpToDate -> Text("Você já está com a versão mais recente. ✓", color = Green)
+                    is UpdateState.Available -> {
+                        Text("Nova versão ${st.release.versionName} disponível!", fontWeight = FontWeight.SemiBold)
+                        val notes = st.release.notes.lines().firstOrNull { it.isNotBlank() }
+                        if (notes != null) Text(notes, fontSize = 14.sp, color = Color.Gray)
+                    }
+                    is UpdateState.Downloading -> {
+                        Text("Baixando…")
+                        if (st.progress >= 0f) {
+                            LinearProgressIndicator(progress = { st.progress }, modifier = Modifier.fillMaxWidth(), color = Green)
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = Green)
+                        }
+                    }
+                    UpdateState.Installing -> Text("Confirme a instalação na tela do Android.")
+                    is UpdateState.Failed -> Text(st.message, color = LateRed)
+                }
+            }
+        },
+        confirmButton = {
+            when (val st = state) {
+                is UpdateState.Available -> TextButton(onClick = { downloadAndInstall(st.release) }) {
+                    Text("Baixar e atualizar")
+                }
+                is UpdateState.Failed -> TextButton(onClick = { checkKey++ }) { Text("Tentar de novo") }
+                else -> TextButton(onClick = onDismiss, enabled = !busy) { Text("OK") }
+            }
+        },
+        dismissButton = {
+            if (state is UpdateState.Available || state is UpdateState.Failed) {
+                TextButton(onClick = onDismiss) { Text("Agora não") }
+            }
+        },
+    )
+}

@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,9 +18,34 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Preparar chave de assinatura
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$SIGNING_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/saudeplus.jks"
+            echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/saudeplus.jks" >> "$GITHUB_ENV"
+            echo "SIGNING_PASSWORD=$SIGNING_PASSWORD" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Secrets de assinatura ausentes: APK assinado com chave de debug e sem release."
+          fi
+      - name: Build APK
+        run: |
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk saudeplus.apk
       - uses: actions/upload-artifact@v4
         with:
           name: saudeplus-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: saudeplus.apk
+      # Cada push na main publica uma release; o app baixa a atualização daqui.
+      # Só publica com a chave fixa, senão a atualização não instalaria por cima.
+      - name: Publicar release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.SIGNING_KEYSTORE_PATH != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.${{ github.run_number }}
+          name: Saúde+ 1.${{ github.run_number }}
+          body: ${{ github.event.head_commit.message }}
+          files: saudeplus.apk
+          make_latest: true

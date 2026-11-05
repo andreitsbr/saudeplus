@@ -12,15 +12,31 @@ android {
         applicationId = "com.saudeplus.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // No GitHub Actions a versão sobe a cada build (usada pela verificação de atualização).
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "1.$build"
+    }
+
+    // Chave fixa (vinda do secret do GitHub): todas as versões precisam da mesma
+    // assinatura para que a atualização instale por cima da versão anterior.
+    val keystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+    val keystorePassword = System.getenv("SIGNING_PASSWORD")
+    if (keystorePath != null && keystorePassword != null) {
+        signingConfigs {
+            create("app") {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                keyAlias = "saudeplus"
+                keyPassword = keystorePassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Assinado com a chave de debug para facilitar a instalação direta do APK.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("app") ?: signingConfigs.getByName("debug")
         }
     }
 

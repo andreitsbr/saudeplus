@@ -9,12 +9,18 @@ App Android simples e rápido para controlar se o medicamento foi tomado.
 - **Atrasados em destaque**: horário fica vermelho quando passou e ainda não foi tomado.
 - **Lembretes**: notificação no horário exato de cada medicamento, com o botão **✓ Tomei** direto na notificação. O ícone de sino no topo envia uma notificação de teste; se as notificações estiverem desativadas, aparece um aviso com o botão **Ativar**.
 - **Reinício automático diário**: cada dia começa com tudo pendente; o registro dos últimos 90 dias fica salvo no aparelho.
+- **Atualização dentro do app**: o botão ⟳ no topo verifica se há versão nova, baixa e instala. Ao abrir, o app também avisa quando há atualização.
 - Funciona offline, sem conta e sem anúncios. Dados ficam só no celular.
 
 ## Como obter o APK
 
-Cada push gera o APK automaticamente no GitHub Actions (workflow **Build APK**).
-Abra a execução mais recente em *Actions* e baixe o artefato `saudeplus-apk`.
+Cada push na branch `main` gera o APK no GitHub Actions e publica uma release
+(`v1.<número do build>`) com o arquivo `saudeplus.apk`:
+https://github.com/andreitsbr/saudeplus/releases/latest
+
+O app consulta essa release para se atualizar. Todas as versões precisam ser assinadas
+com a mesma chave, guardada nos secrets do repositório (`SIGNING_KEYSTORE_BASE64` e
+`SIGNING_PASSWORD`). Sem esses secrets o build funciona, mas não publica release.
 
 ## Compilar localmente
 
