@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.SaudePlus" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#FF00796B</item>
+        <item name="android:windowBackground">#FFF5F7F6</item>
+    </style>
+</resources>
